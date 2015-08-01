@@ -63,26 +63,47 @@
 
 #include "Definitions.h"
 #include "RVOSimulator.h"
+#include "Box2D.h"
+#include "AI.h"
 
+class AI;
 namespace RVO {
 	/**
 	 * \brief      Defines an agent in the simulation.
 	 */
 	class Agent {
 	public:
+		void stop();
+		bool isWalking() { if (trailList_.size() > 0) { return true; } return false; }
+		bool isWalkingToDest(float dstX, float dstY);
+		const Vector2 &getPosition() const { return position_; }
+		void getAABB(b2AABB& aabb);
+		void getPolygoShape(b2PolygonShape& poly);
+		void setBoxSize(int width, int height) { width_ = width; height_ = height; };
+		void setAgentType(int type) { agentType_ = type; }
+		int getAgentType() { return agentType_; }
+		void setAI(AI* ai);
+
 		RVOSimulator *sim_;
 		size_t id_;
+		std::vector<Vector2> trailList_;
+		bool isTrailOverFlag_;
+		float maxSpeed_;
+		float radius_;
+		AI* AI_;
 	private:
 		/**
 		 * \brief      Constructs an agent instance.
 		 * \param      sim             The simulator instance.
 		 */
 		explicit Agent(RVOSimulator *sim);
+		virtual ~Agent();
 
 		/**
 		 * \brief      Computes the neighbors of this agent.
 		 */
 		void computeNeighbors();
+		void computeNeighborsObst();
 
 		/**
 		 * \brief      Computes the new velocity of this agent.
@@ -114,19 +135,19 @@ namespace RVO {
 
 		std::vector<std::pair<float, const Agent *> > agentNeighbors_;
 		size_t maxNeighbors_;
-		float maxSpeed_;
 		float neighborDist_;
 		Vector2 newVelocity_;
 		std::vector<std::pair<float, const Obstacle *> > obstacleNeighbors_;
 		std::vector<Line> orcaLines_;
 		Vector2 position_;
 		Vector2 prefVelocity_;
-		float radius_;
 		float timeHorizon_;
 		float timeHorizonObst_;
 		Vector2 velocity_;
 		NavmeshAgent navAgent_;
-		std::vector<Vector2> trailList_;
+		int width_;
+		int height_;
+		int agentType_;
 
 		friend class KdTree;
 		friend class RVOSimulator;

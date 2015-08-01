@@ -68,7 +68,7 @@ namespace RVO {
 	 * \brief      Defines static obstacles in the simulation.
 	 */
 	class Obstacle {
-	private:
+	public:
 		/**
 		 * \brief      Constructs a static obstacle instance.
 		 */

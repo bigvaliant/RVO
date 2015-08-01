@@ -59,7 +59,22 @@
 #include "Obstacle.h"
 
 namespace RVO {
-	Agent::Agent(RVOSimulator *sim) : maxNeighbors_(0), maxSpeed_(0.0f), neighborDist_(0.0f), radius_(0.0f), sim_(sim), timeHorizon_(0.0f), timeHorizonObst_(0.0f), id_(0) { }
+	Agent::Agent(RVOSimulator *sim) : maxNeighbors_(0), maxSpeed_(0.0f), neighborDist_(0.0f), radius_(0.0f), sim_(sim), timeHorizon_(0.0f), timeHorizonObst_(0.0f), id_(0), isTrailOverFlag_(false) 
+	{
+		width_ = 0;
+		height_ = 0;
+		agentType_ = 0;
+		AI_ = NULL;
+	}
+
+	Agent::~Agent() 
+	{
+		if (AI_)
+		{
+			delete AI_;
+			AI_ = NULL;
+		}
+	}
 
 	void Agent::computeNeighbors()
 	{
@@ -73,6 +88,15 @@ namespace RVO {
 			rangeSq = sqr(neighborDist_);
 			sim_->kdTree_->computeAgentNeighbors(this, rangeSq);
 		}
+	}
+
+	void Agent::computeNeighborsObst()
+	{
+		obstacleNeighbors_.clear();
+		float rangeSq = sqr(timeHorizonObst_ * maxSpeed_ + radius_);
+		sim_->kdTree_->computeObstacleNeighbors(this, rangeSq);
+
+		agentNeighbors_.clear();
 	}
 
 	/* Search for the best new velocity. */
@@ -90,6 +114,12 @@ namespace RVO {
 
 			const Vector2 relativePosition1 = obstacle1->point_ - position_;
 			const Vector2 relativePosition2 = obstacle2->point_ - position_;
+
+			if (trailList_.size() > 0)
+			{
+				if (RVO::absSq(obstacle1->point_ - trailList_[0]) <= sqr(radius_))
+					continue;
+			}
 
 			/*
 			 * Check if velocity obstacle of obstacle is already taken care of by
@@ -429,17 +459,93 @@ namespace RVO {
 	void Agent::update()
 	{
 		if (trailList_.size() > 0) {
+			float timeStep_ = sim_->timeStep_;
 			velocity_ = newVelocity_;
-			position_ += velocity_ * sim_->timeStep_;
-			float start[] = {position_.x(), position_.y()};
-			vcpy(navAgent_.pos, start);
+			position_ += velocity_ * timeStep_;
 			
 			//Delete the arrived in the path to the point
-			if (RVO::absSq(position_ - trailList_[0]) <=  10.0f * 10.0f) {
+			float distance = RVO::absSq(position_ - trailList_[0]);
+			bool arrived = false;
+			Vector2 tempVelocity = normalize(newVelocity_);
+			if (RVO::absSq(tempVelocity - prefVelocity_) > 0.001)
+			{
+				// 行进方向改变，表示有阻挡，要绕行
+				// 若此时与目标在一定范围内，则认为已到达目标，不然可能出现反复绕行的情况
+				if (distance <= 4 * this->radius_ * this->radius_ ||
+					distance <=  (maxSpeed_*timeStep_)*(maxSpeed_*timeStep_))
+				{
+					arrived = true;
+				}
+			}
+			else if (distance <=  (maxSpeed_*timeStep_)*(maxSpeed_*timeStep_)) 
+			{
+				position_ = trailList_[0];
+				arrived = true;
+			}
+
+			if (arrived)
+			{
+				Vector2 endPos = trailList_[0];
 				std::vector<Vector2>::iterator k = trailList_.begin();
 				trailList_.erase(k);
+				if (trailList_.size() <= 0) {
+					isTrailOverFlag_ = true;
+					prefVelocity_ = RVO::Vector2(0.0f, 0.0f);
+
+					if (AI_)
+						AI_->notifyWalkStop(endPos.x(), endPos.y());
+				}
 			}
+
+			float start[] = {position_.x(), position_.y()};
+			vcpy(navAgent_.pos, start);
 		}
+	}
+
+	void Agent::stop()
+	{
+		prefVelocity_ = RVO::Vector2(0.0f, 0.0f);
+		trailList_.clear();
+		isTrailOverFlag_ = true;
+	}
+
+	void Agent::getAABB(b2AABB& aabb)
+	{
+		aabb.lowerBound.x = position_.x() - width_ / 2;
+		aabb.lowerBound.y = position_.y() - height_ / 2;
+		aabb.upperBound.x = position_.x() + width_ / 2;
+		aabb.upperBound.y = position_.y() + height_ / 2;
+	}
+
+	void Agent::getPolygoShape(b2PolygonShape& poly)
+	{
+		b2Vec2 center(position_.x(), position_.y());
+		poly.SetAsBox((float)width_ / 2, (float)height_ / 2, center, 0);
+	}
+
+	void Agent::setAI(AI* ai)
+	{
+		if (AI_)
+		{
+			delete AI_;
+		}
+
+		AI_ = ai;
+	}
+
+	// 是否正在朝着指定目标行进中
+	bool Agent::isWalkingToDest(float dstX, float dstY)
+	{
+		if (!this->isWalking())
+			return false;
+
+		float deltaX = navAgent_.target[0] - dstX;
+		float deltaY = navAgent_.target[1] - dstY;
+		if (((deltaX < 10.0 && deltaX > 0.01) || (deltaX < 0.01 && deltaX > -10.0)) &&
+			((deltaY < 10.0 && deltaY > 0.01) || (deltaY < 0.01 && deltaY > -10.0)))
+			return true;
+
+		return false;
 	}
 
 	bool linearProgram1(const std::vector<Line> &lines, size_t lineNo, float radius, const Vector2 &optVelocity, bool directionOpt, Vector2 &result)
@@ -530,7 +636,7 @@ namespace RVO {
 		}
 		else {
 			/* Optimize closest point and inside circle. */
-			result = optVelocity;
+			result = normalize(optVelocity) * radius;//optVelocity;
 		}
 
 		for (size_t i = 0; i < lines.size(); ++i) {

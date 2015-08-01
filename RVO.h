@@ -59,6 +59,7 @@
 #include "RVOSimulator.h"
 #include "Vector2.h"
 #include "Agent.h"
+#include "Obstacle.h"
 
 /**
 

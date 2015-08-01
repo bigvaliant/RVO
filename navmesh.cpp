@@ -25,6 +25,9 @@ inline float vperp(const float* a, const float* b) { return a[0]*b[1] - a[1]*b[0
 inline void vsub(float* v, const float* a, const float* b) { v[0] = a[0]-b[0]; v[1] = a[1]-b[1]; }
 inline void vadd(float* v, const float* a, const float* b) { v[0] = a[0]+b[0]; v[1] = a[1]+b[1]; }
 
+bool _less(heapele*l,heapele*r) { return ((mapnode*)l)->F < ((mapnode*)r)->F; }
+void _clear(heapele*e){ ((mapnode*)e)->F = ((mapnode*)e)->G = ((mapnode*)e)->H = ((mapnode*)e)->z = 0; ((mapnode*)e)->parent = NULL; }
+
 inline float vdistsqr(const float* a, const float* b)
 {
 	const float dx = b[0]-a[0];
@@ -75,6 +78,31 @@ void* poolAlloc( void* userData, unsigned int size )
 		return ptr;
 	}
 	return 0;
+}
+
+bool requestLink(mapnode *tmp, float* va, float* vb, float* vc, float x1, float y1, float x2, float y2, int i)
+{
+	if (va[0] == x1 && va[1] == y1) {
+		if (vb[0] == x2 && vb[1] == y2) {
+			return true;
+		} else if (vc[0] == x2 && vc[1] == y2) {
+			return true;
+		}
+	} else if (vb[0] == x1 && vb[1] == y1) {
+		if (va[0] == x2 && va[1] == y2) {
+			return true;
+		} else if (vc[0] == x2 && vc[1] == y2) {
+			return true;
+		}
+	} else if (vc[0] == x1 && vc[1] == y1) {
+		if (va[0] == x2 && va[1] == y2) {
+			return true;
+		} else if (vb[0] == x2 && vb[1] == y2) {
+			return true;
+		}
+	}
+	
+	return false;
 }
 
 struct Edge
@@ -187,7 +215,66 @@ cleanup:
 	return 0;
 }
 
+static int buildmapnode(struct Navmesh* nav)
+{
+	if (!nav) return 0;
 
+	//·ÖÅämap_nodeÄÚ´æ
+	nav->defaultMap = (mapnode*)calloc(nav->ntris*2,sizeof(*nav->defaultMap));
+	if (!nav->defaultMap) return 0;
+
+	for (int i = 0; i < nav->ntris; ++i)
+	{
+		float cx1, cy1, cx2, cy2, cx3, cy3;
+		unsigned short* tri = &nav->tris[i*6];
+		float* va = &nav->verts[tri[0]*2];
+		float* vb = &nav->verts[tri[1]*2];
+		float* vc = &nav->verts[tri[2]*2];
+		mapnode *tmp = &nav->defaultMap[i];
+		tmp->i  = i;
+		
+		tmp->links[0] = -1;
+		tmp->links[1] = -1;
+		tmp->links[2] = -1;
+
+		//ÖØÐÄ
+		tmp->x  = (va[0] + vb[0] + vc[0])/3;
+		tmp->y  = (va[1] + vb[1] + vc[1])/3;
+		
+		//ÖÐÐÄµã×ø±ê
+		cx1 = (va[0] + vb[0])/2;
+		cy1 = (va[1] + vb[1])/2;
+		cx2 = (vc[0] + vb[0])/2;
+		cy2 = (vc[1] + vb[1])/2;
+		cx3 = (vc[0] + va[0])/2;
+		cy3 = (vc[1] + va[1])/2;
+
+		//ÈýÌõ±ßÖÐÐÄµã¾àÀë
+		tmp->v[0] = sqrt((cx1 - cx2)*(cx1 - cx2) + (cy1 - cy2)*(cy1 - cy2));
+		tmp->v[1] = sqrt((cx2 - cx3)*(cx2 - cx3) + (cy2 - cy3)*(cy2 - cy3));
+		tmp->v[2] = sqrt((cx1 - cx3)*(cx1 - cx3) + (cy1 - cy3)*(cy1 - cy3));
+
+		//ÁÚ½ÓÈý½ÇÐÎ
+		for (int i = 0; i < 3; ++i)
+		{
+			const unsigned short nei = tri[3+i];
+			if (nei != 0xffff)
+			{
+				unsigned short* tri_nei = &nav->tris[nei*6];
+				float* na = &nav->verts[tri_nei[0]*2];
+				float* nb = &nav->verts[tri_nei[1]*2];
+				float* nc = &nav->verts[tri_nei[2]*2];
+
+				//mapnode *nei_node = &nav->map[nei];	
+				if (requestLink(tmp, na, nb, nc, va[0], va[1], vb[0], vb[1], nei)) { tmp->links[0] = nei; continue; }
+				if (requestLink(tmp, na, nb, nc, vb[0], vb[1], vc[0], vc[1], nei)) { tmp->links[1] = nei; continue; }
+				if (requestLink(tmp, na, nb, nc, vc[0], vc[1], va[0], va[1], nei)) { tmp->links[2] = nei; continue; }
+			}
+		}
+	}
+
+	return 1;
+}
 
 
 static float closestPtPtSeg(const float* pt, const float* sp, const float* sq)
@@ -202,102 +289,9 @@ static float closestPtPtSeg(const float* pt, const float* sp, const float* sq)
 	return t/d;
 }
 
-void parsefloat(std::vector<float> const& f, std::vector<std::pair<float, float>> &vector_point,std::vector<int> &vec_idx)
-{
-	std::map<int, std::pair<float, float>> map_idx_point;
-	std::map<std::pair<float, float>, int> map_point_idx;
-	std::map<int, int> map_idx1_idx2;
-	std::list<int> list_idx;
-
-	std::map<std::pair<float, float>, int>::iterator itr1;
-	std::map<int, std::pair<float, float>>::iterator itr2;
-	std::map<int, int>::iterator itr3;
-	std::list<int>::iterator itr4;
-	
-	int n = f.size();
-	for (int i=0;i<n/2;i++)
-	{
-		std::pair<float, float> value;
-		value = std::make_pair(f[i*2],f[i*2+1]);
-		vec_idx.push_back(i);
-		map_idx_point.insert(std::make_pair(i, value));
-		itr1 = map_point_idx.find(value);
-		map_point_idx.insert(std::make_pair(value, i));
-		if(itr1 != map_point_idx.end())
-		{		
-			map_idx1_idx2.insert(std::make_pair(i,itr1->second));
-		}
-	}
-	
-	itr1 = map_point_idx.begin();
-	for(; itr1 != map_point_idx.end(); ++itr1 )
-	{
-		itr2 = map_idx_point.begin();
-		for(; itr2 != map_idx_point.end(); ++itr2 )
-		{
-			if(itr2->second.first == itr1->first.first && itr2->second.second == itr1->first.second && itr1->second != itr2->first)
-			{
-				for(std::vector<int>::size_type ix = 0; ix != vec_idx.size(); ++ix)
-				{
-					if(vec_idx[ix] == itr2->first)
-					{
-						vec_idx[ix] = itr1->second;
-					}
-				}
-			}
-		}
-	}
-	
-	itr1 = map_point_idx.begin();
-	for(; itr1 != map_point_idx.end(); ++itr1 )
-	{
-		list_idx.push_back(itr1->second);
-	}
-	list_idx.sort();
-	
-	itr4 = list_idx.begin();
-	for(; itr4 != list_idx.end(); ++itr4 )
-	{
-		itr2 = map_idx_point.find(*itr4);
-		vector_point.push_back(itr2->second);
-	}
-
-	for(std::vector<int>::size_type ix = 0; ix != vec_idx.size(); ++ix)
-	{
-		itr3 = map_idx1_idx2.find(vec_idx[ix]);
-		if(itr3 != map_idx1_idx2.end())
-		{
-			vec_idx[ix] = itr3->second;
-		}
-	}
-
-	for(std::vector<std::pair<float, float>>::size_type ix = 0; ix != vector_point.size(); ++ix)
-	{
-		itr1 = map_point_idx.find(vector_point[ix]);
-		for(std::vector<int>::size_type jx = 0; jx != vec_idx.size(); ++jx)
-		{
-			if(vec_idx[jx]==itr1->second)
-			{
-				vec_idx[jx]=ix;
-			}
-		}
-	}
-
-	//for(std::vector<int>::size_type jx = 0; jx != vec_idx.size(); ++jx)
-	//{
-	//	printf("%f, %f\n", vector_point[vec_idx[jx]].first, vector_point[vec_idx[jx]].second);
-	//}
-}
-
 // navmeshCreateEx
-struct Navmesh* navmeshCreateEx(std::vector<float> const& f)
+struct Navmesh* navmeshCreateEx(std::vector<int> const& trisList, std::vector<std::pair<float, float> > const& pointList)
 {
-
-	std::vector<int> trisList;
-	std::vector<std::pair<float, float>> pointList;
-
-	parsefloat(f, pointList, trisList);
-
 	int i=0,j=0,z=0;
 	struct Navmesh* nav = 0;
 	int npts = pointList.size();
@@ -311,7 +305,7 @@ struct Navmesh* navmeshCreateEx(std::vector<float> const& f)
 	nav->verts = (float*)malloc(sizeof(float)*npts*2);
 	if (!nav->verts)
 		goto cleanup;
-	for(std::vector<std::pair<float, float>>::size_type ix = 0; ix != npts; ++ix)
+	for(std::vector<std::pair<float, float> >::size_type ix = 0; ix != npts; ++ix)
 	{
 		nav->verts[i] = pointList[ix].first;
 		nav->verts[i+1] = pointList[ix].second;
@@ -342,20 +336,15 @@ struct Navmesh* navmeshCreateEx(std::vector<float> const& f)
 	if (!nav->ntris)
 		goto cleanup;
 
-	//for(int k=0;k<(npts*2);k++)
-	//{
-	//	printf("k:%d, verts:%f\n", k, nav->verts[k]);
-	//}
-
-	//for(int k=0;k<ntrisL*2;k++)
-	//{
-	//	if(nav->tris[k] != 52685)
-	//		printf("k:%d, tris:%d\n", k, nav->tris[k]);
-	//}
-
 	if (!buildadj(nav->tris, nav->ntris, nav->nverts))
 		goto cleanup;
 
+	if (!buildmapnode(nav))
+		goto cleanup;
+	
+	nav->close_list = new dlist();
+	nav->open_list = new minheap(8192,_less,_clear);
+		
 	return nav;
 	
 cleanup:
@@ -365,8 +354,13 @@ cleanup:
 			free(nav->verts);
 		if (nav->tris)
 			free(nav->tris);
+		if (nav->defaultMap)
+			free(nav->defaultMap);
+		if (nav->close_list)
+			free(nav->close_list);
+		if (nav->open_list)
+			free(nav->open_list);
 		free(nav);
-        
 	}
 
 	return 0;
@@ -390,7 +384,6 @@ int navmeshFindNearestTri(struct Navmesh* nav, const float* pos, float* nearest)
 		const float* vc = &nav->verts[tri[2]*2];
 		if (pntri(va,vb,vc,pos))
 		{	
-			//printf("%f:%f %f:%f %f:%f\n", va[0],va[1], vb[0],vb[1], vc[0],vc[1]);
 			return i;
 		}
 	}
@@ -422,7 +415,7 @@ int navmeshFindNearestTri(struct Navmesh* nav, const float* pos, float* nearest)
 
 int navmeshFindPath(struct Navmesh* nav, const float* start, const float* end, unsigned short* path, const int maxpath)
 {
-// æ ¹æ®åœ°å›¾å¤§å°é€‚å½“è°ƒæ•´å®
+// ¸ù¾ÝµØÍ¼´óÐ¡ÊÊµ±µ÷Õûºê
 #define MAX_STACK 128*8
 #define MAX_PARENT 128*8
 	int i, starti, endi, stack[MAX_STACK], nstack;
@@ -445,11 +438,6 @@ int navmeshFindPath(struct Navmesh* nav, const float* start, const float* end, u
 	stack[nstack++] = endi;
 	parent[endi] = endi;
 
-	//const unsigned short* tri;
-	//const float* va;
-	//const float* vb;
-	//const float* vc;
-	
 	while (nstack)
 	{
 		unsigned short* tri;
@@ -468,13 +456,6 @@ int navmeshFindPath(struct Navmesh* nav, const float* start, const float* end, u
 			for (;;)
 			{
 				path[npath++] = cur;
-				
-				/*tri = &nav->tris[cur*6];
-				va = &nav->verts[tri[0]*2];
-				vb = &nav->verts[tri[1]*2];
-				vc = &nav->verts[tri[2]*2];
-				printf("%f:%f %f:%f %f:%f\n", va[0],va[1], vb[0],vb[1], vc[0],vc[1]);*/
-
 				if (npath >= maxpath) break;
 				if (parent[cur] == cur) break;
 				cur = parent[cur];
@@ -497,6 +478,137 @@ int navmeshFindPath(struct Navmesh* nav, const float* start, const float* end, u
 	return 0;
 }
 
+void reset(minheap* open_list, dlist* close_list)
+{
+	mapnode *n = NULL;
+	while(n = (mapnode*)close_list->Pop()){
+		n->G = n->H = n->F = n->z = 0;
+		n->parent = NULL;
+	}
+	open_list->Clear();
+}
+
+//¼ÆËãµ½´ïÏàÁÙ½ÚµãÐèÒªµÄ´ú¼Û
+double cost_2_neighbor(mapnode *from,int i)
+{
+	int zz = i + from->z;
+	if (zz == 0 || zz == 1)
+		return from->v[0];
+	else if(zz == 2)
+		return from->v[2];
+	else if(zz == 3)
+		return from->v[1];
+	else
+	{
+		assert(0);
+		return 0.0f;
+	}
+}
+
+// H¹ÀÖµ¼ÆËã
+double cost_2_goal(mapnode *from,const float* to)
+{
+	float delta_x = from->x - to[0];
+	float delta_y = from->y - to[1];
+	return sqrt(delta_x*delta_x + delta_y*delta_y);
+}
+
+//¼ÇÂ¼Â·¾¶´ÓÉÏÒ»¸ö½Úµã½øÈë¸Ã½ÚµãµÄ±ß£¨Èç¹û´ÓÖÕµã¿ªÊ¼Ñ°Â·¼´Îª´©³ö±ß£©
+void setZ(mapnode *node, int idx)
+{	
+	node->z = 0;
+	if (node->links[0] == idx)
+		node->z = 0;
+	else if(node->links[1] == idx)
+		node->z = 1;
+	else if(node->links[2] == idx)
+		node->z = 2;
+	else
+		assert(0);
+}
+
+int navmeshFindBestPath(struct Navmesh* nav, const float* start, const float* end, unsigned short* path)
+{
+	int starti, endi, tpath[AGENT_MAX_PATH];
+	starti = navmeshFindNearestTri(nav, start, NULL);
+	endi = navmeshFindNearestTri(nav, end, NULL);
+	if (starti == -1 || endi == -1)
+		return 0;
+		
+	if (starti == endi)
+	{
+		path[0] = (unsigned short)starti;
+		return 1;
+	}
+	
+	mapnode *from = &nav->defaultMap[starti];
+	mapnode *to = &nav->defaultMap[endi];
+		
+	nav->open_list->insert(to);
+
+	mapnode *current_node = NULL;
+	for(;;)
+	{
+		current_node = (mapnode*)nav->open_list->popmin();
+		if(!current_node){ 
+			reset(nav->open_list, nav->close_list);
+			return 0;
+		}
+
+		if(current_node->i == from->i){
+			int npath = 0;
+			while(current_node)
+			{
+				path[npath++] = current_node->i;
+				mapnode *t = current_node;
+				current_node = current_node->parent;
+				t->parent = NULL;
+				t->F = t->G = t->H = t->z = 0;
+				t->index = 0;
+			}
+
+			reset(nav->open_list, nav->close_list);
+			return npath;
+		}
+
+		//current²åÈëµ½close±í
+		nav->close_list->Push(current_node);
+
+		for(int i=0; i<3; ++i)
+		{
+			int nei = current_node->links[i];
+			if (nei == -1) continue;
+
+			mapnode *neighbor = &nav->defaultMap[nei];
+			if(neighbor->pre || neighbor->next){
+				continue;//ÔÚclose±íÖÐ,²»×ö´¦Àí
+			}
+
+			if(neighbor->index)//ÔÚopenlistÖÐ
+			{
+				double new_G = current_node->G + cost_2_neighbor(current_node,i);
+				if(new_G < neighbor->G)
+				{
+					//¾­¹ýµ±Ç°neighborÂ·¾¶¸ü¼Ñ,¸üÐÂÂ·¾¶
+					neighbor->G = new_G;
+					neighbor->F = neighbor->G + neighbor->H;
+					neighbor->parent = current_node;
+					nav->open_list->change(neighbor);
+					setZ(neighbor, current_node->i);
+				}
+				continue;
+			}
+			neighbor->parent = current_node;
+			neighbor->G = current_node->G + cost_2_neighbor(current_node,i);
+			neighbor->H = cost_2_goal(neighbor,start);
+			neighbor->F = neighbor->G + neighbor->H;
+			nav->open_list->insert(neighbor);
+			setZ(neighbor, current_node->i);
+		}
+	}
+	
+	return 0;
+}
 
 inline int vequal(const float* a, const float* b)
 {
@@ -642,9 +754,14 @@ void navmeshDelete(struct Navmesh* nav)
 		free(nav->verts);
 	if (nav->tris)
 		free(nav->tris);
+	if (nav->defaultMap)
+		free(nav->defaultMap);
+	if (nav->close_list)
+		free(nav->close_list);
+	if (nav->open_list)
+		free(nav->open_list);
 	free(nav);
 }
-
 
 int posValid(const float* p)
 {
@@ -657,7 +774,6 @@ void agentInit(struct NavmeshAgent* agent)
 	vset(agent->oldpos, FLT_MAX, FLT_MAX);
 	vset(agent->target, FLT_MAX, FLT_MAX);
 	agent->npath = 0;
-	agent->nvisited = 0;
 	agent->ncorners = 0;
 }
 
@@ -666,17 +782,18 @@ void agentFindPath(struct NavmeshAgent* agent, struct Navmesh* nav)
 	agent->npath = 0;
 
 	if (posValid(agent->target))
-		agent->npath = navmeshFindPath(nav, agent->pos, agent->target, agent->path, AGENT_MAX_PATH);
+		agent->npath = navmeshFindBestPath(nav, agent->pos, agent->target, agent->path);
+	    //agent->npath = navmeshFindPath(nav, agent->pos, agent->target, agent->path, AGENT_MAX_PATH);
 }
 
 
 int FindPath(struct Navmesh* nav, struct NavmeshAgent* agent)
 {	
 
-	//èŽ·å¾—è”é€šçš„ä¸‰è§’å½¢
+	//»ñµÃÁªÍ¨µÄÈý½ÇÐÎ
 	agentFindPath(agent, nav);
 
-	//æ‹‰çº¿èŽ·å¾—è·¯å¾„
+	//À­Ïß»ñµÃÂ·¾¶
 	agent->ncorners = 0;
 	if (agent->npath)
 		agent->ncorners = navmeshStringPull(nav, agent->pos, agent->target, agent->path, agent->npath, agent->corners, MAX_CORNERS);

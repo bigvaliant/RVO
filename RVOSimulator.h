@@ -67,6 +67,9 @@
 
 #include "Vector2.h"
 #include "navmesh.h"
+#include "Box2D.h"
+#include "Sample_SoloMesh.h"
+#include "InputGeom.h"
 
 namespace RVO {
 	/**
@@ -177,7 +180,7 @@ namespace RVO {
 		 * \return     The point of the agent, or NULL when the agent
 		 *             defaults have not been set.
 		 */
-		Agent *addAgentEx(const Vector2 &position);
+		Agent *addAgentEx(const Vector2 &position, float radius, float maxSpeed);
 
 		/**
 		 * \brief      Adds a new agent to the simulation.
@@ -245,7 +248,13 @@ namespace RVO {
 		 *             the environment, the vertices should be listed in clockwise
 		 *             order.
 		 */
-		size_t addObstacle(const std::vector<Vector2> &vertices);
+		Obstacle *addObstacle(const std::vector<Vector2> &vertices);
+
+		/**
+		 * \brief      delete a new obstacle to the simulation.
+		 * \param      obstacle
+		 */
+		void delObstacle(Obstacle *obstacle);
 
 		/**
 		 * \brief      Lets the simulator perform a simulation step and updates the
@@ -253,6 +262,7 @@ namespace RVO {
 		 *             each agent.
 		 */
 		void doStep();
+		void doSingleStep(size_t agentNo);
 
 		/**
 		 * \brief      Returns the specified agent neighbor of the specified
@@ -565,7 +575,7 @@ namespace RVO {
 		 *                             position.
 		 */
 		void setAgentPosition(size_t agentNo, const Vector2 &position);
-
+		void setAgentPosition(Agent* agent, const Vector2 &position);
 		/**
 		 * \brief      Sets the two-dimensional preferred velocity of a
 		 *             specified agent.
@@ -627,8 +637,8 @@ namespace RVO {
 		/*
 		* createNavmesh
 		*/
-		struct Navmesh* createNavmesh(std::vector<float> const& f);
-		
+		struct Navmesh* createNavmesh(std::vector<int> const& trisList, std::vector<std::pair<float, float> > const& pointList);
+
 		/*
 		* setNavTargetPos
 		*/
@@ -648,15 +658,57 @@ namespace RVO {
 		* getNumTrails
 		*/
 		size_t getNumTrails(size_t i) const;
+		
+		/*
+		* getTrailOverFlag
+		*/
+		bool getTrailOverFlag(size_t i) const;
+
+		/*
+		* setTrailOverFlag
+		*/
+		void setTrailOverFlag(size_t i);
+		
+		/*
+		* setBuildObstFlag
+		*/
+		void setBuildObstFlag(bool flag);
+		void setObstacles(const std::vector<Obstacle *> obstacles);
+
+		Agent* getAgent(size_t i) { return agents_[i]; }
+		Agent* getAgentById(size_t id);
+		int getAgentType(size_t agentNo);
+		void getAgentAABB(size_t agentNo, b2AABB& aabb);
+		void getAgentPolygoShape(size_t agentNo, b2PolygonShape& poly);
+		unsigned long getPreStepTime() { return preStepTime_; } 
+		void setPreStepTime(unsigned long time) { preStepTime_ = time; } 
+		void addPortNo(int port_no);
+		void delPortNo(int port_no);
+		const std::map<int, int>& getPortNoMap() { return portNoMap_; }
+		void setLuaThreadIndex(int index) { luaThreadIndex_ = index; }
+		int getLuaThreadIndex() { return luaThreadIndex_; }
+		void setInstanceId(int instanceId) { instanceId_ = instanceId; }
+		int getInstanceId() { return instanceId_; }
+		
+		bool createNavigation(InputGeom* geom, BuildContext* ctx);
+
 	private:
 		std::vector<Agent *> agents_;
 		Agent *defaultAgent_;
 		float globalTime_;
+		unsigned long preStepTime_;
 		KdTree *kdTree_;
 		std::vector<Obstacle *> obstacles_;
 		float timeStep_;
 		Navmesh *nav_;
 		size_t count_;
+		size_t obstcount_;
+		bool isBuildObstFlag_;
+		std::map<int, int> portNoMap_;
+		int luaThreadIndex_;
+		int instanceId_;
+
+		Sample* sample_;
 		
 		friend class Agent;
 		friend class KdTree;

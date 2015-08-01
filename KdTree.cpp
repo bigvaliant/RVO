@@ -242,7 +242,7 @@ namespace RVO {
 					newObstacle->isConvex_ = true;
 					newObstacle->unitDir_ = obstacleJ1->unitDir_;
 
-					newObstacle->id_ = sim_->obstacles_.size();
+					newObstacle->id_ = sim_->obstcount_++;
 
 					sim_->obstacles_.push_back(newObstacle);
 

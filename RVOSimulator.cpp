@@ -65,13 +65,23 @@
 #endif
 
 namespace RVO {
-	RVOSimulator::RVOSimulator() : defaultAgent_(NULL), globalTime_(0.0f), kdTree_(NULL), timeStep_(0.0f), count_(0)
+	RVOSimulator::RVOSimulator() : defaultAgent_(NULL), globalTime_(0.0f), kdTree_(NULL), timeStep_(0.0f), count_(0), obstcount_(0), isBuildObstFlag_(false)
 	{
 		kdTree_ = new KdTree(this);
+		preStepTime_ = 0;
+		luaThreadIndex_ = 0; 
+		instanceId_ = 0;
+
+		sample_ = 0;
 	}
 
-	RVOSimulator::RVOSimulator(float timeStep, float neighborDist, size_t maxNeighbors, float timeHorizon, float timeHorizonObst, float radius, float maxSpeed, const Vector2 &velocity) : defaultAgent_(NULL), globalTime_(0.0f), kdTree_(NULL), timeStep_(timeStep), count_(0)
+	RVOSimulator::RVOSimulator(float timeStep, float neighborDist, size_t maxNeighbors, float timeHorizon, float timeHorizonObst, float radius, float maxSpeed, const Vector2 &velocity) : defaultAgent_(NULL), globalTime_(0.0f), kdTree_(NULL), timeStep_(timeStep), count_(0), obstcount_(0), isBuildObstFlag_(false)
 	{
+		preStepTime_ = 0;
+		luaThreadIndex_ = 0;
+
+		sample_ = 0;
+
 		kdTree_ = new KdTree(this);
 		defaultAgent_ = new Agent(this);
 
@@ -93,13 +103,16 @@ namespace RVO {
 		for (size_t i = 0; i < agents_.size(); ++i) {
 			delete agents_[i];
 		}
-
-		for (size_t i = 0; i < obstacles_.size(); ++i) {
-			delete obstacles_[i];
-		}
+		
+		//for (size_t i = 0; i < obstacles_.size(); ++i) {
+		//	delete obstacles_[i];
+		//}
 
 		navmeshDelete(nav_);
 
+		delete sample_;
+
+		portNoMap_.clear();
 		delete kdTree_;
 	}
 
@@ -113,10 +126,11 @@ namespace RVO {
 	int RVOSimulator::findPath(Agent *agent)
 	{
 		if (agent) {
+			agent->isTrailOverFlag_ = false;
 			agent->trailList_.clear();
 			FindPath(nav_, &agent->navAgent_);
 			for(int j=0; j<agent->navAgent_.ncorners*2;) {
-				if (agent->navAgent_.corners[j] != agent->navAgent_.pos[0] && agent->navAgent_.corners[j+1] != agent->navAgent_.pos[1]) {
+				if (agent->navAgent_.corners[j] != agent->navAgent_.pos[0] || agent->navAgent_.corners[j+1] != agent->navAgent_.pos[1]) {
 					agent->trailList_.push_back(RVO::Vector2(agent->navAgent_.corners[j], agent->navAgent_.corners[j+1]));
 				}
 				j=j+2;
@@ -148,14 +162,14 @@ namespace RVO {
 		float start[] = {position.x(), position.y()};
 		vcpy(agent->navAgent_.pos, start);
 
-		agent->id_ = count_++;
+		agent->id_ = ++count_;
 
 		agents_.push_back(agent);
 
 		return agent->id_;
 	}
 
-	Agent *RVOSimulator::addAgentEx(const Vector2 &position)
+	Agent *RVOSimulator::addAgentEx(const Vector2 &position, float radius, float maxSpeed)
 	{
 		if (defaultAgent_ == NULL) {
 			return NULL;
@@ -165,9 +179,9 @@ namespace RVO {
 
 		agent->position_ = position;
 		agent->maxNeighbors_ = defaultAgent_->maxNeighbors_;
-		agent->maxSpeed_ = defaultAgent_->maxSpeed_;
-		agent->neighborDist_ = defaultAgent_->neighborDist_;
-		agent->radius_ = defaultAgent_->radius_;
+		agent->maxSpeed_ = maxSpeed;
+		agent->neighborDist_ = radius + 10;
+		agent->radius_ = radius;
 		agent->timeHorizon_ = defaultAgent_->timeHorizon_;
 		agent->timeHorizonObst_ = defaultAgent_->timeHorizonObst_;
 		agent->velocity_ = defaultAgent_->velocity_;
@@ -176,7 +190,7 @@ namespace RVO {
 		float start[] = {position.x(), position.y()};
 		vcpy(agent->navAgent_.pos, start);
 
-		agent->id_ = count_++;
+		agent->id_ = ++count_;
 
 		agents_.push_back(agent);
 
@@ -200,7 +214,7 @@ namespace RVO {
 		float start[] = {position.x(), position.y()};
 		vcpy(agent->navAgent_.pos, start);
 
-		agent->id_ = count_++;
+		agent->id_ = ++count_;
 
 		agents_.push_back(agent);
 
@@ -227,12 +241,13 @@ namespace RVO {
 		}
 	}
 
-	size_t RVOSimulator::addObstacle(const std::vector<Vector2> &vertices)
+	Obstacle *RVOSimulator::addObstacle(const std::vector<Vector2> &vertices)
 	{
 		if (vertices.size() < 2) {
-			return RVO_ERROR;
+			return NULL;
 		}
 
+		Obstacle *firstObstacle = NULL;
 		const size_t obstacleNo = obstacles_.size();
 
 		for (size_t i = 0; i < vertices.size(); ++i) {
@@ -242,6 +257,9 @@ namespace RVO {
 			if (i != 0) {
 				obstacle->prevObstacle_ = obstacles_.back();
 				obstacle->prevObstacle_->nextObstacle_ = obstacle;
+			}
+			else {
+				firstObstacle = obstacle;
 			}
 
 			if (i == vertices.size() - 1) {
@@ -258,17 +276,48 @@ namespace RVO {
 				obstacle->isConvex_ = (leftOf(vertices[(i == 0 ? vertices.size() - 1 : i - 1)], vertices[i], vertices[(i == vertices.size() - 1 ? 0 : i + 1)]) >= 0.0f);
 			}
 
-			obstacle->id_ = obstacles_.size();
+			obstacle->id_ = obstcount_++;
 
 			obstacles_.push_back(obstacle);
 		}
 
-		return obstacleNo;
+		return firstObstacle;
+	}
+		
+	void RVOSimulator::delObstacle(Obstacle *obstacle)
+	{
+		while(obstacle){
+			std::vector<Obstacle *>::iterator iter = obstacles_.begin();
+			for (; iter!=obstacles_.end(); iter++) {
+				if (*iter == obstacle) {
+					obstacles_.erase(iter);break;
+				}
+			}
+
+			if (obstacle->prevObstacle_) {
+				obstacle->prevObstacle_->nextObstacle_ = NULL;
+			}
+			
+			if (obstacle->nextObstacle_) {
+				obstacle = obstacle->nextObstacle_;
+				delete obstacle->prevObstacle_;
+				obstacle->prevObstacle_ = NULL;
+			}
+			else {
+				delete obstacle;
+				obstacle = NULL;
+			}
+		}
 	}
 
 	void RVOSimulator::doStep()
 	{
 		kdTree_->buildAgentTree();
+
+		if (isBuildObstFlag_) {
+			kdTree_->buildObstacleTree();
+			isBuildObstFlag_ = false;
+		}
 
 #ifdef _OPENMP
 #pragma omp parallel for
@@ -288,6 +337,26 @@ namespace RVO {
 		globalTime_ += timeStep_;
 	}
 
+	void RVOSimulator::doSingleStep(size_t agentNo)
+	{
+		if (isBuildObstFlag_) {
+			kdTree_->buildObstacleTree();
+			isBuildObstFlag_ = false;
+		}
+
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+
+		agents_[agentNo]->computeNeighborsObst();
+		agents_[agentNo]->computeNewVelocity();
+
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+		agents_[agentNo]->update();
+	}
+	
 	size_t RVOSimulator::getAgentAgentNeighbor(size_t agentNo, size_t neighborNo) const
 	{
 		return agents_[agentNo]->agentNeighbors_[neighborNo].second->id_;
@@ -388,6 +457,21 @@ namespace RVO {
 		return agents_[i]->trailList_.size();
 	}
 
+	bool RVOSimulator::getTrailOverFlag(size_t i) const
+	{
+		return agents_[i]->isTrailOverFlag_;
+	}
+
+	void RVOSimulator::setTrailOverFlag(size_t i)
+	{
+		agents_[i]->isTrailOverFlag_ = false;
+	}
+
+	void RVOSimulator::setBuildObstFlag(bool flag)
+	{
+		isBuildObstFlag_ = flag;
+	}
+
 	size_t RVOSimulator::getNumObstacleVertices() const
 	{
 		return obstacles_.size();
@@ -411,6 +495,16 @@ namespace RVO {
 	float RVOSimulator::getTimeStep() const
 	{
 		return timeStep_;
+	}
+
+	void RVOSimulator::setObstacles(const std::vector<Obstacle *> obstacles)
+	{
+		size_t size = obstacles.size();
+		obstacles_.resize(size);
+		for (size_t i = 0; i < size; ++i) {
+			obstacles_[i] = obstacles[i];
+		}
+		obstcount_ = size;
 	}
 
 	void RVOSimulator::processObstacles()
@@ -437,10 +531,10 @@ namespace RVO {
 		defaultAgent_->timeHorizonObst_ = timeHorizonObst;
 		defaultAgent_->velocity_ = velocity;
 	}
-
-	struct Navmesh* RVOSimulator::createNavmesh(std::vector<float> const& f)
+	
+	struct Navmesh* RVOSimulator::createNavmesh(std::vector<int> const& trisList, std::vector<std::pair<float, float> > const& pointList)
 	{
-		nav_ = navmeshCreateEx(f);
+		nav_ = navmeshCreateEx(trisList, pointList);
 		if (nav_) {
 			return nav_;
 		}
@@ -467,6 +561,19 @@ namespace RVO {
 	void RVOSimulator::setAgentPosition(size_t agentNo, const Vector2 &position)
 	{
 		agents_[agentNo]->position_ = position;
+
+		float start[] = {position.x(), position.y()};
+		vcpy(agents_[agentNo]->navAgent_.pos, start);
+		agents_[agentNo]->stop();
+	}
+
+	void RVOSimulator::setAgentPosition(Agent* agent, const Vector2 &position)
+	{
+		agent->position_ = position;
+
+		float start[] = {position.x(), position.y()};
+		vcpy(agent->navAgent_.pos, start);
+		agent->stop();
 	}
 
 	void RVOSimulator::setAgentPrefVelocity(size_t agentNo, const Vector2 &prefVelocity)
@@ -494,8 +601,62 @@ namespace RVO {
 		agents_[agentNo]->velocity_ = velocity;
 	}
 	
+	void RVOSimulator::getAgentAABB(size_t agentNo, b2AABB& aabb)
+	{
+		agents_[agentNo]->getAABB(aabb);
+	}
+
+	void RVOSimulator::getAgentPolygoShape(size_t agentNo, b2PolygonShape& poly)
+	{
+		agents_[agentNo]->getPolygoShape(poly);
+	}
+
 	void RVOSimulator::setTimeStep(float timeStep)
 	{
 		timeStep_ = timeStep;
+	}
+
+	int RVOSimulator::getAgentType(size_t agentNo)
+	{
+		return agents_[agentNo]->getAgentType();
+	}
+
+	void RVOSimulator::addPortNo(int port_no)
+	{
+		portNoMap_[port_no] = 1;
+	}
+
+	void RVOSimulator::delPortNo(int port_no)
+	{
+		portNoMap_.erase(port_no);
+	}
+
+	Agent* RVOSimulator::getAgentById(size_t id)
+	{
+		std::vector<Agent *>::iterator iter = agents_.begin();
+		for (; iter!=agents_.end(); iter++) {
+			if ((*iter)->id_ == id) {
+				return (*iter);
+			}
+		}
+
+		return NULL;
+	}
+
+	bool RVOSimulator::createNavigation(InputGeom* geom, BuildContext* ctx)
+	{
+		sample_ = new Sample_SoloMesh();
+		if (sample_ && geom && ctx) 
+		{
+			sample_->setContext(ctx);
+			sample_->handleMeshChanged(geom);
+		}else {
+			return false;
+		}
+
+		if (!sample_->handleBuild())
+			return false;
+
+		return true;
 	}
 }
